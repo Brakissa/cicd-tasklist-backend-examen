@@ -8,7 +8,7 @@ pipeline {
     SONAR_PROJECT_NAME = 'Examen-tasklist-backend'
     DOCKERHUB_CREDENTIALS_ID = 'id-dockerhub'
     SONAR_TOKEN_CREDENTIAL_ID = 'id-sonar'
-    DOCKERHUB_REPOSITORY = 'kiss04/tasklist-backend'
+    DOCKERHUB_REPOSITORY = 'kiss04/tasklist-backend-examen'
     IMAGE_TAG = "${env.BUILD_NUMBER}"
   }
 
