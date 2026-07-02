@@ -86,7 +86,8 @@ pipeline {
 
     stage('Trivy image scan') {
       steps {
-        sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --exit-code 0 --ignore-unfixed --severity HIGH,CRITICAL --format table --output trivy-report.txt ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"      }
+        sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --exit-code 0 --ignore-unfixed --severity HIGH,CRITICAL --format table --output trivy-report.txt ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"
+      }
       post {
         always {
           archiveArtifacts allowEmptyArchive: true, artifacts: 'trivy-report.txt', fingerprint: true
