@@ -16,6 +16,12 @@ export default defineConfig({
         "src/server.ts",
         "**/*.config.ts",
       ],
+      thresholds: {
+        statements: 70,
+        branches: 80,
+        functions: 70,
+        lines: 70,
+      },
     },
     reporters: ["default", "junit"],
     outputFile: {
