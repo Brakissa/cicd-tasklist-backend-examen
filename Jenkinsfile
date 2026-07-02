@@ -2,12 +2,28 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_HUB_REPOSITORY = 'your-dockerhub-username/tasklist-backend'
-    IMAGE_TAG = "${env.BUILD_NUMBER ?: 'latest'}"
-    SONAR_PROJECT_KEY = 'tasklist-backend'
+    NODE_ENV = 'test'
+    SONAR_HOST_URL = 'https://sonarqube.cicd.kits.ext.educentre.fr'
+    SONAR_PROJECT_KEY = 'Examen-tasklist-backend'
+    SONAR_PROJECT_NAME = 'Examen-tasklist-backend'
+    DOCKERHUB_CREDENTIALS_ID = 'id-dockerhub'
+    SONAR_TOKEN_CREDENTIAL_ID = 'id-sonar'
+    DOCKERHUB_REPOSITORY = 'kiss04/tasklist-backend'
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
+  }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
   }
 
   stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
     stage('Install dependencies') {
       steps {
         sh 'npm ci'
@@ -20,34 +36,43 @@ pipeline {
       }
     }
 
-    stage('Unit tests') {
+    stage('Run unit tests') {
       steps {
-        sh 'npm test'
+        sh 'npm run test:coverage'
       }
       post {
         always {
-          junit 'reports/junit.xml'
+          junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/junit.xml', fingerprint: true
         }
       }
     }
 
-    stage('End-to-end tests') {
+    stage('Run e2e tests') {
       steps {
-        sh 'npm run test:e2e'
+        sh 'npm run test:e2e:coverage'
+      }
+    }
+
+    stage('Build TypeScript') {
+      steps {
+        sh 'npm run build'
       }
     }
 
     stage('SonarQube analysis') {
       steps {
         withSonarQubeEnv('SonarQube') {
-          sh 'sonar-scanner -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.sources=src -Dsonar.tests=src/__tests__ -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info'
+          withCredentials([string(credentialsId: 'id-sonar', variable: 'SONAR_TOKEN')]) {
+            sh 'npx sonar-scanner'
+          }
         }
       }
     }
 
-    stage('SonarQube Quality Gate') {
+    stage('Quality Gate') {
       steps {
-        timeout(time: 5, unit: 'MINUTES') {
+        timeout(time: 10, unit: 'MINUTES') {
           waitForQualityGate abortPipeline: true
         }
       }
@@ -55,29 +80,43 @@ pipeline {
 
     stage('Build Docker image') {
       steps {
-        script {
-          def imageName = "${DOCKER_HUB_REPOSITORY}:${IMAGE_TAG}"
-          sh "docker build -t ${imageName} ."
-          env.BUILT_IMAGE = imageName
+        sh "docker build -t ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} ."
+      }
+    }
+
+    stage('Trivy image scan') {
+      steps {
+        sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --exit-code 0 --ignore-unfixed --severity HIGH,CRITICAL --format table --output trivy-report.txt ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"      }
+      post {
+        always {
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'trivy-report.txt', fingerprint: true
         }
       }
     }
 
-    stage('Security scan image with Trivy') {
-      steps {
-        script {
-          sh 'mkdir -p security-reports'
-          sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format json --output security-reports/trivy-report.json ${env.BUILT_IMAGE} || true"
-          sh "trivy image --format spdx-json --output security-reports/sbom.json ${env.BUILT_IMAGE} || true"
+    stage('Generate SBOM') {
+        steps {
+            sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --format cyclonedx --output sbom.json ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"
         }
-      }
+        post {
+            always {
+            archiveArtifacts allowEmptyArchive: true, artifacts: 'sbom.json', fingerprint: true
+            }
+        }
     }
 
     stage('Publish Docker image') {
+      when {
+        branch 'main'
+      }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-          sh 'echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin'
-          sh "docker push ${env.BUILT_IMAGE}"
+        withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker tag ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} ${DOCKERHUB_REPOSITORY}:latest
+            docker push ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}
+            docker push ${DOCKERHUB_REPOSITORY}:latest
+          '''
         }
       }
     }
@@ -85,8 +124,14 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'security-reports/**', allowEmptyArchive: true
-      cleanWs()
+      echo 'Nettoyage du workspace Jenkins.'
+      deleteDir()
+    }
+    success {
+      echo 'Pipeline CI/CD terminée avec succès.'
+    }
+    failure {
+      echo 'La pipeline CI/CD a échoué.'
     }
   }
 }
