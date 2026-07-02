@@ -63,7 +63,7 @@ pipeline {
     stage('SonarQube analysis') {
       steps {
         withSonarQubeEnv('SonarQube') {
-          withCredentials([string(credentialsId: 'id-sonar', variable: 'SONAR_TOKEN')]) {
+          withCredentials([string(credentialsId: env.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {
             sh 'npx sonar-scanner'
           }
         }
