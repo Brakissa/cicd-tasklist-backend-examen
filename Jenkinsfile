@@ -18,54 +18,40 @@ pipeline {
   }
 
   stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
-    }
-
-    stage('Install dependencies') {
+    stage('Install Dependencies') {
       steps {
         sh 'npm ci'
+        sh 'npx prisma generate'
       }
     }
 
-    stage('Generate Prisma client') {
+    stage('Unit Tests') {
       steps {
-        sh 'npm run prisma:generate'
-      }
-    }
-
-    stage('Run unit tests') {
-      steps {
+        sh 'npx prisma generate --schema=prisma/schema-test.prisma'
         sh 'npm run test:coverage'
       }
       post {
         always {
           junit allowEmptyResults: true, testResults: 'reports/junit.xml'
-          archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/junit.xml', fingerprint: true
         }
       }
     }
 
-    stage('Run e2e tests') {
+    stage('E2E Tests') {
       steps {
         sh 'npm run test:e2e:coverage'
       }
-    }
-
-    stage('Build TypeScript') {
-      steps {
-        sh 'npm run build'
+      post {
+        always {
+          junit allowEmptyResults: true, testResults: 'reports/junit.xml'
+        }
       }
     }
 
-    stage('SonarQube analysis') {
+    stage('SonarQube Analysis') {
       steps {
-        withSonarQubeEnv('SonarQube') {
-          withCredentials([string(credentialsId: env.SONAR_TOKEN_CREDENTIAL_ID, variable: 'SONAR_TOKEN')]) {
-            sh 'npx sonar-scanner'
-          }
+        withSonarQubeEnv('sonarqube-server-1') {
+          sh 'npx sonar-scanner'
         }
       }
     }
@@ -78,35 +64,58 @@ pipeline {
       }
     }
 
-    stage('Build Docker image') {
+    stage('Docker Build') {
       steps {
-        sh "docker build -t ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} ."
+        sh '''
+          docker buildx create --use --name tasklist-builder || true
+          docker buildx build \
+            --tag ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} \
+            --tag ${DOCKERHUB_REPOSITORY}:latest \
+            --load \
+            .
+        '''
       }
     }
 
-    stage('Trivy image scan') {
+    stage('Trivy Scan') {
       steps {
-        sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --exit-code 0 --ignore-unfixed --severity HIGH,CRITICAL --format table --output trivy-report.txt ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"
+        sh 'mkdir -p reports'
+        sh '''
+          trivy image \
+            --format json \
+            --output reports/trivy-report.json \
+            ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}
+        '''
       }
       post {
         always {
-          archiveArtifacts allowEmptyArchive: true, artifacts: 'trivy-report.txt', fingerprint: true
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/trivy-report.*'
         }
       }
     }
 
     stage('Generate SBOM') {
-        steps {
-            sh "trivy image --cache-dir /tmp/trivy-cache-${BUILD_NUMBER} --format cyclonedx --output sbom.json ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}"
+      steps {
+        sh '''
+          trivy image \
+            --format spdx-json \
+            --output reports/sbom-spdx.json \
+            ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}
+
+          trivy image \
+            --format cyclonedx \
+            --output reports/sbom-cyclonedx.json \
+            ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}
+        '''
+      }
+      post {
+        always {
+          archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/sbom-*'
         }
-        post {
-            always {
-            archiveArtifacts allowEmptyArchive: true, artifacts: 'sbom.json', fingerprint: true
-            }
-        }
+      }
     }
 
-    stage('Publish Docker image') {
+    stage('Docker Push') {
       when {
         branch 'main'
       }
@@ -114,10 +123,20 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           sh '''
             echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker tag ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} ${DOCKERHUB_REPOSITORY}:latest
-            docker push ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG}
-            docker push ${DOCKERHUB_REPOSITORY}:latest
+            docker buildx build \
+              --platform linux/amd64 \
+              --tag ${DOCKERHUB_REPOSITORY}:${IMAGE_TAG} \
+              --tag ${DOCKERHUB_REPOSITORY}:latest \
+              --sbom=true \
+              --provenance=true \
+              --push \
+              .
           '''
+        }
+      }
+      post {
+        always {
+          sh 'docker logout'
         }
       }
     }
@@ -125,14 +144,13 @@ pipeline {
 
   post {
     always {
-      echo 'Nettoyage du workspace Jenkins.'
-      deleteDir()
+      cleanWs()
     }
     success {
-      echo 'Pipeline CI/CD terminée avec succès.'
+      echo 'Backend pipeline completed successfully!'
     }
     failure {
-      echo 'La pipeline CI/CD a échoué.'
+      echo 'Backend pipeline failed!'
     }
   }
 }
