@@ -21,7 +21,6 @@ lcov-report
 
 src/__tests__
 vitest.config.ts
-tsconfig.json
 
 .vscode
 .idea
